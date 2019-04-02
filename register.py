@@ -27,7 +27,7 @@ argparser.add_argument(
 args = argparser.parse_args()
 
 
-if args.yaml_filename and os.path.isfile(yaml_filename):
+if args.yaml_filename and os.path.isfile(args.yaml_filename):
     with open(args.yaml_filename, 'r') as f:
         registration_data = yaml.load(f)
 
