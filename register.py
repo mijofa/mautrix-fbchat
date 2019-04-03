@@ -106,6 +106,7 @@ with open(yaml_filename.format(**registration_data), 'w') as f:
 
 ## Actually logging out invalidates the session cookies.
 ## FIXME: Session cookies are being a pain in the arse and hardly working anyway, how well do app passwords work?
+## FIXME: App passwords don't work at all... what the fuck?
 # fb.logout()  # Probably happens automatically with garbage collection, but can't hurt
 
 print(f"\n\nCopy {f.name} into a more sensible place and add to Synapse's app_service_config_files option\n")
