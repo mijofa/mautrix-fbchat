@@ -3,6 +3,7 @@ import pdb
 
 import argparse
 import asyncio
+import datetime
 import logging
 import urllib
 import time
@@ -17,6 +18,8 @@ import mautrix.client.api.types
 # GOTCHAS:
 # * alias_localpart is the part between '#' and ':', non-inclusive.
 #   It seemed intuitive that it would include the '#' but it doesn't. Many hours were wasted on this.
+# * When using a room alias where a room ID is needed, Synapse responds with "MGuestAccessForbidden".
+#   That is not a very intuitive error for the actual issue.
 
 
 async def main(
@@ -45,13 +48,12 @@ async def main(
         password='?',
         session_cookies=fbchat_session,
         max_tries=2)
+    assert facebook_puppet.isLoggedIn()
 
     url_parsed = urllib.parse.urlsplit(url)
     async with matrix_appservice.run(host=url_parsed.hostname, port=url_parsed.port) as listener:
         await listener
-        print(await matrix_appservice.intent.whoami())
         matrix_bot = matrix_appservice.intent
-        joined_rooms = await matrix_bot.get_joined_rooms()
         try:
             # A lot of functions (such as send_text) don't support room aliases, so save the room ID
             protocol_roomid = (await matrix_bot.get_room_alias(f"#{protocol_room_alias}:{matrix_appservice.domain}")).room_id
@@ -68,17 +70,15 @@ async def main(
                 # creation_content=,
             )
         else:
-            # This is probably unnecessary as the mautrix library does this as needed, but it doesn't hurt.
+            # This is probably unnecessary because the mautrix library does this as needed, but it doesn't hurt.
             # I also think it makes more sense intuitively to do this right here.
-            #
-            # NOTE: If you get the roomid wrong here (such as using an alias instead of the ID) the error is nonintuitive
-            #       mautrix.errors.request.MGuestAccessForbidden: Guest access not allowed
             await matrix_bot.ensure_joined(protocol_roomid)
 
-        # NOTE: If you get the roomid wrong here (such as using an alias instead of the ID) the error is nonintuitive
-        #       mautrix.errors.request.MGuestAccessForbidden: Guest access not allowed
-        await matrix_bot.send_text(protocol_roomid, 'foobar')
-        time.sleep(1)
+        now = str(datetime.datetime.now())
+        t = asyncio.create_task(matrix_bot.send_text(protocol_roomid, now))
+        await asyncio.sleep(3)
+        facebook_puppet.sendMessage(now, thread_id='100001894141857')
+        await t
 
 
 if __name__ == '__main__':
@@ -102,4 +102,4 @@ if __name__ == '__main__':
     del args.yaml_file
 
     # FIXME: Is using **vars(...) safe?
-    asyncio.get_event_loop().run_until_complete(main(**args.config, verbose=args.verbose))
+    asyncio.run(main(**args.config, verbose=args.verbose))
