@@ -3,6 +3,7 @@ import argparse
 import getpass
 import os.path
 import secrets
+import socket
 import sys
 
 import yaml
@@ -33,6 +34,10 @@ argparser.add_argument(
     '-b', '--baseurl',
     default='http://127.0.0.1:8008',
     help="Matrix server base URL")
+argparser.add_argument(
+    '-d', '--domain',
+    default=socket.getfqdn(),
+    help='The domain of the matrix server')
 args = argparser.parse_args()
 
 
@@ -108,6 +113,7 @@ registration_data = {
     'fbchat_uid': fb.uid,  # Just so we can later confirm who this config
     'fbchat_session': fb.getSession(),  # FIXME: Do I need all the session cookies? Is this yaml file stored securely?
 
+    'matrix_domain': args.domain,
     'matrix_baseurl': args.baseurl,
     'matrix_user_localpart': args.matrix_user,
 }
