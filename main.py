@@ -9,9 +9,11 @@ import urllib
 
 import yaml
 
-import fbchat
 import mautrix
 import mautrix.client.api.types
+
+import fbchat_bridge
+import commands
 
 
 # GOTCHAS:
@@ -20,12 +22,16 @@ import mautrix.client.api.types
 # * When using a room alias where a room ID is needed, Synapse responds with "MGuestAccessForbidden".
 #   That is not a very intuitive error for the actual issue.
 
-class customLogger(logging.Handler):
+class asyncLogger(logging.Handler):
+    """Log to a Matrix chat room using async/await syntax"""
     def __init__(self, *args, matrix_intent, matrix_roomid, **kwargs):
         super().__init__(*args, **kwargs)
+        self.setLevel(logging.INFO)
+
         self.matrix_intent = matrix_intent
         self.matrix_roomid = matrix_roomid
         self.queue = asyncio.Queue()
+        # FIXME: I don't actually know what ensure_future means
         asyncio.ensure_future(self.emit_listener())
 
     async def emit_listener(self):
@@ -56,21 +62,13 @@ async def main(
         **kwargs):
     protocol_room_alias = f"fbchat_{fbchat_uid}_protocol"  # noqa: E999
 
-    facebook_puppet = fbchat.Client(
-        email=fbchat_username,
-        password='?',
-        session_cookies=fbchat_session,
-        max_tries=2)
-    assert facebook_puppet.isLoggedIn()
-
     # matrix_puppet = mautrix.client.Client()
     matrix_appservice = mautrix.AppService(
         server=matrix_baseurl,
         domain=matrix_domain,
         as_token=as_token,
         hs_token=hs_token,
-        bot_localpart=sender_localpart,
-        aiohttp_params={})
+        bot_localpart=sender_localpart)
 
     url_parsed = urllib.parse.urlsplit(url)
     async with matrix_appservice.run(host=url_parsed.hostname, port=url_parsed.port) as server:
@@ -82,7 +80,7 @@ async def main(
         # I don't want to hand more passwords around.
         # So, instead, I have added the matrix user to the appservice's regexes,
         # and am treating it as another child of the appservice
-        matrix_puppet = matrix_bot.user(f'@{matrix_user_localpart}:{matrix_domain}')
+        matrix_puppet = matrix_bot.user(f"@{matrix_user_localpart}:{matrix_domain}")
 
         # Make sure the protocol room exists and the bot is a member, for debugging/etc
         try:
@@ -104,12 +102,26 @@ async def main(
             # This is probably unnecessary because the mautrix library does this as needed, but it doesn't hurt.
             # I also think it makes more sense intuitively to do this right here.
             await matrix_bot.ensure_joined(protocol_roomid)
-            logging.getLogger().addHandler(customLogger(matrix_intent=matrix_bot, matrix_roomid=protocol_roomid))
+            logging.getLogger().addHandler(asyncLogger(matrix_intent=matrix_bot, matrix_roomid=protocol_roomid))
 
-        async def f(*args, **kwargs):
-            logging.log(level=logging.DEBUG, msg=(args, kwargs))
-            return True
-        matrix_appservice.matrix_event_handler(f)
+        facebook_puppet = fbchat_bridge.Client(
+            email=fbchat_username,
+            password='?',
+            session_cookies=fbchat_session,
+            max_tries=2,
+            matrix_bot=matrix_bot,
+            matrix_protocol_roomid=protocol_roomid,
+        )
+        assert facebook_puppet.isLoggedIn()
+        matrix_appservice.matrix_event_handler(facebook_puppet.handle_matrix_event)
+
+        cmd_hdlr = commands.command_handler(
+            protocol_roomid=protocol_roomid,
+            matrix_bot=matrix_bot,
+            username=await matrix_puppet.whoami(),
+        )
+        matrix_appservice.matrix_event_handler(cmd_hdlr.handle_event)
+
         # Now that we're set up, start receiving Matrix and Facebook events
         await server.start_serving()
         # fbchat is not written for asyncio usage, so run it in it's own thread
