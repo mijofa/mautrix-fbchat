@@ -45,8 +45,6 @@ if args.yaml_filename and os.path.isfile(args.yaml_filename):
     with open(args.yaml_filename, 'r') as f:
         registration_data = yaml.load(f)
 
-    print("Only updating Facebook session cookies because config file already exists", file=sys.stderr)
-
     if args.fb_user and args.fb_user != registration_data['fbchat_username']:
         raise Exception("Requested Facebook username doesn't match config")
     elif not args.fb_user:
@@ -96,6 +94,7 @@ registration_data = {
         # Yes these are single-item lists, it's not a typo, Synapse actually needs it to work that way.
         'users': [
             {'exclusive': True, 'regex': f"@fbchat_{fb.uid}_.*"}
+            {'exclusive': False, 'regex': f"@{args.matrix_user}:{args.domain}"}  # FIXME: Is this incredibly evil?
         ],
         'aliases': [
             {'exclusive': True, 'regex': f"#fbchat_{fb.uid}_.*"}
@@ -109,6 +108,8 @@ registration_data = {
     # I would like to avoid having multiple config files sharing some of the same secret tokens.
     # So instead of copying the as/hs token values into another config file along with the Facebook auth tokens,
     # I'm just going include the Facebook auth tokens in with the Synapse config and rely on Synapse ignoring it.
+    #
+    # FIXME: Can I store this info in Matrix somehow?
     'fbchat_username': fb.email,  # fbchat library won't let me login with *just* the session cookies, so use the username too.
     'fbchat_uid': fb.uid,  # Just so we can later confirm who this config
     'fbchat_session': fb.getSession(),  # FIXME: Do I need all the session cookies? Is this yaml file stored securely?
