@@ -22,7 +22,7 @@ class command_handler(object):
             # Message not in the protocol room and/or not from the real user
             return
 
-        logging.info(f"Running command {mx_ev.content.body}")  # noqa:E999
+        logging.info(f"Running command {mx_ev.content.body}")
         await self.mx_bot.send_text(
             self.roomid,
             # FIXME: How safe have I made eval?

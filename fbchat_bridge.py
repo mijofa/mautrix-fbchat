@@ -364,9 +364,9 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info((f"Messages {msg_ids} delivered to {delivered_for} in"  # noqa: E999
-                       f"{thread_id} ({thread_type.name}) at {ts/1000}s"  # noqa: E999
-                       f"META {metadata} MSG {msg}"))  # noqa: E999
+        fbchat.log.info((f"Messages {msg_ids} delivered to {delivered_for} in"
+                         f"{thread_id} ({thread_type.name}) at {ts/1000}s"
+                         f"META {metadata} MSG {msg}"))
 
 #    def onMarkedSeen(
 #        self, threads=None, seen_ts=None, ts=None, metadata=None, msg=None

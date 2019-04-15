@@ -87,7 +87,7 @@ else:
 
 registration_data = {
     'id': f"mautrix-fbchat_{fb.uid}",
-    'url': f"http://127.0.0.1:{args.port}",  # FIXME: Is this actually needed?
+    'url': f"http://127.0.0.1:{args.port}",
     'hs_token': hs_token,
     'as_token': as_token,
     'namespaces': {

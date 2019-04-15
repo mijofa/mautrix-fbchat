@@ -60,7 +60,7 @@ async def main(
         fbchat_session,
         url,
         **kwargs):
-    protocol_room_alias = f"fbchat_{fbchat_uid}_protocol"  # noqa: E999
+    protocol_room_alias = f"fbchat_{fbchat_uid}_protocol"
 
     # matrix_puppet = mautrix.client.Client()
     matrix_appservice = mautrix.AppService(
