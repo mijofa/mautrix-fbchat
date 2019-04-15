@@ -63,14 +63,16 @@ async def main(
 
     log_handler = asyncLogger()
     logging.basicConfig(
-#        format='%(levelname)s:%(name)s:%(funcName)s:%(message)s',
-        handlers=(log_handler,logging.StreamHandler(None)),
+        format='%(levelname)s:%(name)s:%(funcName)s:%(message)s',
+        handlers=(log_handler, logging.StreamHandler(None)),
     )
     logger = logging.getLogger(__name__)
-    logger.setLevel(max(30-(10*verbose), logging.DEBUG))
-
+    logger.setLevel(max(30 - (10 * verbose), logging.DEBUG))
 
     protocol_room_alias = f"fbchat_{fbchat_uid}_protocol"
+
+    async def default_query_handler(query):
+        logger.warning(f"query made for {query}")
 
     matrix_appservice = mautrix.AppService(
         server=matrix_baseurl,
@@ -78,7 +80,9 @@ async def main(
         as_token=as_token,
         hs_token=hs_token,
         bot_localpart=sender_localpart,
-        log=logger,
+        query_user=default_query_handler,
+        query_alias=default_query_handler,
+        # log=logger,
     )
 
     url_parsed = urllib.parse.urlsplit(url)

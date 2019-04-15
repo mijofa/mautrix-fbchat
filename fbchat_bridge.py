@@ -3,6 +3,7 @@ import logging
 import asyncio
 
 import fbchat
+fbchat.log.setLevel(logging.WARNING)
 
 
 class Client(fbchat.Client):
@@ -45,8 +46,9 @@ class Client(fbchat.Client):
 #        """
 #        self.log.info("Logging in {}...".format(email))
 #
-#    def on2FACode(self):
-#        """Called when a 2FA code is needed to progress"""
+    def on2FACode(self):
+        """Called when a 2FA code is needed to progress"""
+        raise NotImplementedError("No way of getting the 2FA code")
 #        return input("Please enter your 2FA code --> ")
 #
 #    def onLoggedIn(self, email=None):
@@ -978,7 +980,7 @@ class Client(fbchat.Client):
         :param ts: A timestamp of the action
         :param msg: A full set of the data recieved
         """
-        self.log.info("Ready & listening")
+        self.log.info("Facebook primed")
 
     def onChatTimestamp(self, buddylist=None, msg=None):
         """
