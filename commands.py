@@ -9,10 +9,14 @@ class _commands:
 
 
 class command_handler(object):
-    def __init__(self, matrix_bot, protocol_roomid, username):
+    def __init__(self, matrix_bot, protocol_roomid, username=None):
         self.mx_bot = matrix_bot
         self.roomid = protocol_roomid
         self.username = username
+
+    async def set_username(self, whoami):
+        assert self.username is None
+        self.username = await whoami
 
     async def handle_event(self, mx_ev):
         if not isinstance(mx_ev, mautrix.types.MessageEvent):

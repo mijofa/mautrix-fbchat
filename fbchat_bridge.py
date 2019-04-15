@@ -1,47 +1,49 @@
 #!/usr/bin/python3
-import logging
+import asyncio
 
 import fbchat
 
 
 class Client(fbchat.Client):
-    def __init__(self, *args, matrix_bot, matrix_protocol_roomid, **kwargs):
+    def __init__(self, *args, matrix_bot, matrix_protocol_roomid, log_handler, **kwargs):
         super().__init__(*args, **kwargs)
         self.mx_bot = matrix_bot
         self.mx_protocol_roomid = matrix_protocol_roomid
+        fbchat.log.removeHandler(fbchat.handler)
+        fbchat.log.addHandler(log_handler)
 
     async def handle_matrix_event(self, mx_ev):
-        logging.debug(mx_ev)
+        fbchat.log.debug(mx_ev)
 
     async def listen(self, markAlive=None):
-        print("Running")
+        """
+        Complete rewrite of fbchat's listen() function so that it can be turned into an asyncio awaitable.
+        Most of it is a copy-paste of the original, except for the 'await' line below
+        """
         if markAlive is not None:
             self.setActiveStatus(markAlive)
 
         self.startListening()
         self.onListening()
 
-        print("Loop")
-        import asyncio
-        while self.listening and self.doOneListen():
-            print("Looping...")
-            await asyncio.sleep(0)
+        while self.listening:
+            await asyncio.get_event_loop().run_in_executor(None, self.doOneListen)
 
         self.stopListening()
 
 #    def doOneListen(self, *args, **kwargs):
-#        logging.critical('start')
+#        fbchat.log.critical('start')
 #        super().doOneListen(self, *args, **kwargs)
-#        logging.critical('next')
+#        fbchat.log.critical('next')
 
     ### Facebook event handlers
 #    def onLoggingIn(self, email=None):
 #        """
-#        Called when the client is logging in
+#        Called when the client is fbchat.log in
 #
 #        :param email: The email of the client
 #        """
-#        logging.info("Logging in {}...".format(email))
+#        fbchat.log.info("Logging in {}...".format(email))
 #
 #    def on2FACode(self):
 #        """Called when a 2FA code is needed to progress"""
@@ -53,11 +55,11 @@ class Client(fbchat.Client):
 #
 #        :param email: The email of the client
 #        """
-#        logging.info("Login of {} successful.".format(email))
+#        fbchat.log.info("Login of {} successful.".format(email))
 #
 #    def onListening(self):
 #        """Called when the client is listening"""
-#        logging.info("Listening...")
+#        fbchat.log.info("Listening...")
 #
 #    def onListenError(self, exception=None):
 #        """
@@ -66,7 +68,7 @@ class Client(fbchat.Client):
 #        :param exception: The exception that was encountered
 #        :return: Whether the loop should keep running
 #        """
-#        logging.exception("Got exception while listening")
+#        fbchat.log.exception("Got exception while listening")
 #        return True
 
     def onMessage(
@@ -96,7 +98,7 @@ class Client(fbchat.Client):
         :type message_object: models.Message
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info("{} from {} in {}".format(message_object, thread_id, thread_type.name))
+        fbchat.log.info("{} from {} in {}".format(message_object, thread_id, thread_type.name))
 
     def onColorChange(
         self,
@@ -123,7 +125,7 @@ class Client(fbchat.Client):
         :type new_color: models.ThreadColor
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "Color change from {} in {} ({}): {}".format(
                 author_id, thread_id, thread_type.name, new_color
             )
@@ -153,7 +155,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "Emoji change from {} in {} ({}): {}".format(
                 author_id, thread_id, thread_type.name, new_emoji
             )
@@ -183,7 +185,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "Title change from {} in {} ({}): {}".format(
                 author_id, thread_id, thread_type.name, new_title
             )
@@ -211,7 +213,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info("{} changed thread image in {}".format(author_id, thread_id))
+        fbchat.log.info("{} changed thread image in {}".format(author_id, thread_id))
 
     def onNicknameChange(
         self,
@@ -239,7 +241,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "Nickname change from {} in {} ({}) for {}: {}".format(
                 author_id, thread_id, thread_type.name, changed_for, new_nickname
             )
@@ -265,7 +267,7 @@ class Client(fbchat.Client):
         :param ts: A timestamp of the action
         :param msg: A full set of the data recieved
         """
-        logging.info("{} added admin: {} in {}".format(author_id, added_id, thread_id))
+        fbchat.log.info("{} added admin: {} in {}".format(author_id, added_id, thread_id))
 
     def onAdminRemoved(
         self,
@@ -287,7 +289,7 @@ class Client(fbchat.Client):
         :param ts: A timestamp of the action
         :param msg: A full set of the data recieved
         """
-        logging.info("{} removed admin: {} in {}".format(author_id, removed_id, thread_id))
+        fbchat.log.info("{} removed admin: {} in {}".format(author_id, removed_id, thread_id))
 
 #    def onApprovalModeChange(
 #        self,
@@ -310,9 +312,9 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        """
 #        if approval_mode:
-#            logging.info("{} activated approval mode in {}".format(author_id, thread_id))
+#            fbchat.log.info("{} activated approval mode in {}".format(author_id, thread_id))
 #        else:
-#            logging.info("{} disabled approval mode in {}".format(author_id, thread_id))
+#            fbchat.log.info("{} disabled approval mode in {}".format(author_id, thread_id))
 
     def onMessageSeen(
         self,
@@ -336,7 +338,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "Messages seen by {} in {} ({}) at {}s".format(
                 seen_by, thread_id, thread_type.name, seen_ts / 1000
             )
@@ -382,7 +384,7 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "Marked messages as seen in threads {} at {}s".format(
 #                [(x[0], x[1].name) for x in threads], seen_ts / 1000
 #            )
@@ -408,7 +410,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "{} unsent the message {} in {} ({}) at {}s".format(
                 author_id, repr(mid), thread_id, thread_type.name, ts / 1000
             )
@@ -433,7 +435,7 @@ class Client(fbchat.Client):
         :param ts: A timestamp of the action
         :param msg: A full set of the data recieved
         """
-        logging.info(
+        fbchat.log.info(
             "{} added: {} in {}".format(author_id, ", ".join(added_ids), thread_id)
         )
 
@@ -456,7 +458,7 @@ class Client(fbchat.Client):
         :param ts: A timestamp of the action
         :param msg: A full set of the data recieved
         """
-        logging.info("{} removed: {} in {}".format(author_id, removed_id, thread_id))
+        fbchat.log.info("{} removed: {} in {}".format(author_id, removed_id, thread_id))
 
     def onFriendRequest(self, from_id=None, msg=None):
         """
@@ -466,7 +468,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         """
         # Is that before or after it's accepted?
-        logging.info("Friend request from {}".format(from_id))
+        fbchat.log.info("Friend request from {}".format(from_id))
 
     def onInbox(self, unseen=None, unread=None, recent_unread=None, msg=None):
         """
@@ -478,7 +480,7 @@ class Client(fbchat.Client):
         :param recent_unread: --
         :param msg: A full set of the data recieved
         """
-        logging.info("Inbox event: {}, {}, {}".format(unseen, unread, recent_unread))
+        fbchat.log.info("Inbox event: {}, {}, {}".format(unseen, unread, recent_unread))
 
     def onTyping(
         self, author_id=None, status=None, thread_id=None, thread_type=None, msg=None
@@ -526,7 +528,7 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            '{} played "{}" in {} ({})'.format(
 #                author_id, game_name, thread_id, thread_type.name
 #            )
@@ -556,7 +558,7 @@ class Client(fbchat.Client):
 #        :type reaction: models.MessageReaction
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} reacted to message {} with {} in {} ({})".format(
 #                author_id, mid, reaction.name, thread_id, thread_type.name
 #            )
@@ -582,7 +584,7 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} removed reaction from {} message in {} ({})".format(
 #                author_id, mid, thread_id, thread_type
 #            )
@@ -601,7 +603,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "{} blocked {} ({}) thread".format(author_id, thread_id, thread_type.name)
         )
 
@@ -618,7 +620,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type thread_type: models.fbchat.models.ThreadType
         """
-        logging.info(
+        fbchat.log.info(
             "{} unblocked {} ({}) thread".format(author_id, thread_id, thread_type.name)
         )
 
@@ -645,7 +647,7 @@ class Client(fbchat.Client):
 #        :type location: models.LiveLocationAttachment
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} sent live location info in {} ({}) with latitude {} and longitude {}".format(
 #                author_id, thread_id, thread_type, location.latitude, location.longitude
 #            )
@@ -678,7 +680,7 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} started call in {} ({})".format(caller_id, thread_id, thread_type.name)
 #        )
 #
@@ -711,7 +713,7 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} ended call in {} ({})".format(caller_id, thread_id, thread_type.name)
 #        )
 #
@@ -739,7 +741,7 @@ class Client(fbchat.Client):
 #        :param msg: A full set of the data recieved
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} joined call in {} ({})".format(joined_id, thread_id, thread_type.name)
 #        )
 #
@@ -768,7 +770,7 @@ class Client(fbchat.Client):
 #        :type poll: models.Poll
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} created poll {} in {} ({})".format(
 #                author_id, poll, thread_id, thread_type.name
 #            )
@@ -801,7 +803,7 @@ class Client(fbchat.Client):
 #        :type poll: models.Poll
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} voted in poll {} in {} ({})".format(
 #                author_id, poll, thread_id, thread_type.name
 #            )
@@ -832,7 +834,7 @@ class Client(fbchat.Client):
 #        :type plan: models.Plan
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} created plan {} in {} ({})".format(
 #                author_id, plan, thread_id, thread_type.name
 #            )
@@ -861,7 +863,7 @@ class Client(fbchat.Client):
 #        :type plan: models.Plan
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "Plan {} has ended in {} ({})".format(plan, thread_id, thread_type.name)
 #        )
 #
@@ -890,7 +892,7 @@ class Client(fbchat.Client):
 #        :type plan: models.Plan
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} edited plan {} in {} ({})".format(
 #                author_id, plan, thread_id, thread_type.name
 #            )
@@ -921,7 +923,7 @@ class Client(fbchat.Client):
 #        :type plan: models.Plan
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
-#        logging.info(
+#        fbchat.log.info(
 #            "{} deleted plan {} in {} ({})".format(
 #                author_id, plan, thread_id, thread_type.name
 #            )
@@ -956,13 +958,13 @@ class Client(fbchat.Client):
 #        :type thread_type: models.fbchat.models.ThreadType
 #        """
 #        if take_part:
-#            logging.info(
+#            fbchat.log.info(
 #                "{} will take part in {} in {} ({})".format(
 #                    author_id, plan, thread_id, thread_type.name
 #                )
 #            )
 #        else:
-#            logging.info(
+#            fbchat.log.info(
 #                "{} won't take part in {} in {} ({})".format(
 #                    author_id, plan, thread_id, thread_type.name
 #                )
@@ -975,7 +977,7 @@ class Client(fbchat.Client):
         :param ts: A timestamp of the action
         :param msg: A full set of the data recieved
         """
-        logging.info("Ready & listening")
+        fbchat.log.info("Ready & listening")
 
     def onChatTimestamp(self, buddylist=None, msg=None):
         """
@@ -984,7 +986,7 @@ class Client(fbchat.Client):
         :param buddylist: A list of dicts with friend id and last seen timestamp
         :param msg: A full set of the data recieved
         """
-        logging.debug("Chat Timestamps received: {}".format(buddylist))
+        fbchat.log.debug("Chat Timestamps received: {}".format(buddylist))
 
     # How is this different from the one above?
     def onBuddylistOverlay(self, statuses=None, msg=None):
@@ -995,7 +997,7 @@ class Client(fbchat.Client):
         :param msg: A full set of the data recieved
         :type statuses: dict
         """
-        logging.debug("Buddylist overlay received: {}".format(statuses))
+        fbchat.log.debug("Buddylist overlay received: {}".format(statuses))
 
 #    def onUnknownMesssageType(self, msg=None):
 #        """
@@ -1003,7 +1005,7 @@ class Client(fbchat.Client):
 #
 #        :param msg: A full set of the data recieved
 #        """
-#        logging.debug("Unknown message received: {}".format(msg))
+#        fbchat.log.debug("Unknown message received: {}".format(msg))
 #
 #    def onMessageError(self, exception=None, msg=None):
 #        """
@@ -1012,4 +1014,4 @@ class Client(fbchat.Client):
 #        :param exception: The exception that was encountered
 #        :param msg: A full set of the data recieved
 #        """
-#        logging.exception("Exception in parsing of {}".format(msg))
+#        fbchat.log.exception("Exception in parsing of {}".format(msg))
