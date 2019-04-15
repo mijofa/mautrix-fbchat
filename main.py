@@ -28,21 +28,21 @@ class asyncLogger(logging.Handler):
     """Log to a Matrix chat room using async/await syntax"""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Messages of debug or lower MUST NOT go into the protocol room.
+        # Doing so will cause an endless loop
         self.setLevel(logging.INFO)
 
         self.queue = asyncio.Queue()
 
     async def log_to_matrix(self, matrix_intent, matrix_roomid):
         while True:
-            log_msg = await self.queue.get()
+            log_msg = self.format(await self.queue.get())
             await matrix_intent.send_text(matrix_roomid, log_msg)
             self.queue.task_done()
 
     def emit(self, record):
-        log_msg = self.format(record)
-        print(log_msg, file=sys.stderr)
         try:
-            self.queue.put_nowait(log_msg)
+            self.queue.put_nowait(record)
         except Exception:
             self.handleError(record)
 
@@ -58,7 +58,18 @@ async def main(
         fbchat_uid,
         fbchat_session,
         url,
+        verbose,
         **kwargs):
+
+    log_handler = asyncLogger()
+    logging.basicConfig(
+#        format='%(levelname)s:%(name)s:%(funcName)s:%(message)s',
+        handlers=(log_handler,logging.StreamHandler(None)),
+    )
+    logger = logging.getLogger(__name__)
+    logger.setLevel(max(30-(10*verbose), logging.DEBUG))
+
+
     protocol_room_alias = f"fbchat_{fbchat_uid}_protocol"
 
     matrix_appservice = mautrix.AppService(
@@ -66,7 +77,9 @@ async def main(
         domain=matrix_domain,
         as_token=as_token,
         hs_token=hs_token,
-        bot_localpart=sender_localpart)
+        bot_localpart=sender_localpart,
+        log=logger,
+    )
 
     url_parsed = urllib.parse.urlsplit(url)
     async with matrix_appservice.run(host=url_parsed.hostname, port=url_parsed.port) as server:
@@ -100,18 +113,17 @@ async def main(
             # This is probably unnecessary because the mautrix library does this as needed, but it doesn't hurt.
             # I also think it makes more sense intuitively to do this right here.
             awaitables.append(matrix_bot.ensure_joined(protocol_roomid))
-            log_handler = asyncLogger()
-            logging.getLogger().addHandler(log_handler)
-            facebook_puppet = fbchat_bridge.Client(
-                email=fbchat_username,
-                password='?',
-                session_cookies=fbchat_session,
-                max_tries=2,
-                matrix_bot=matrix_bot,
-                matrix_protocol_roomid=protocol_roomid,
-                log_handler=log_handler,
-            )
+            awaitables.append(log_handler.log_to_matrix(matrix_intent=matrix_bot, matrix_roomid=protocol_roomid))
 
+        facebook_puppet = fbchat_bridge.Client(
+            email=fbchat_username,
+            password='?',
+            session_cookies=fbchat_session,
+            max_tries=2,
+            matrix_bot=matrix_bot,
+            matrix_protocol_roomid=protocol_roomid,
+            log=logger,
+        )
         assert facebook_puppet.isLoggedIn()
         matrix_appservice.matrix_event_handler(facebook_puppet.handle_matrix_event)
 
@@ -122,7 +134,6 @@ async def main(
         awaitables.append(cmd_hdlr.set_username(matrix_puppet.whoami()))
         matrix_appservice.matrix_event_handler(cmd_hdlr.handle_event)
 
-        awaitables.append(log_handler.log_to_matrix(matrix_intent=matrix_bot, matrix_roomid=protocol_roomid))
         awaitables.append((await server).start_serving())
         awaitables.append(facebook_puppet.listen())
 
@@ -138,6 +149,7 @@ if __name__ == '__main__':
         help="Config file created with register.py")
     argparser.add_argument(
         '-v', '--verbose',
+        default=0,
         action='count',
         help="Print debug output")
 
