@@ -6,6 +6,38 @@ import fbchat
 fbchat.log.setLevel(logging.WARNING)
 
 
+class Person():
+    def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None):
+        if fbid is None and mxid is None:
+            raise Exception("Must have either an fbid or mxid")
+
+
+class Room():
+    def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None, mxalias: str = None):
+        if fbid is None and mxid is None and mxalias is None:
+            raise Exception("Must have at least one of fbid, mxid, or mxalias")
+
+        if mxalias:
+            _mxid = asyncio.run(matrix_bot.get_room_alias(f"{mxalias}:{matrix_bot.domain}")).room_id
+            if mxid and _mxid != mxid:
+                    raise Exception("mxalias does not match mxid")
+            else:
+                mxid = _mxid
+        elif mxid and not mxalias:
+            mxalias = asyncio.run(matrix_bot.get_state_event(protocol_roomid, "m.room.canonical_alias"))['alias']
+
+        if fbid and not mxid and not mxalias:
+            mxalias = f"#fbchat_{fb_client.uid}_{fbid}"
+            mxid = 
+
+
+        if not fbid:
+            mxalias
+
+    def _get_mxid(self):
+        return asyncio.run(matrix_bot.get_room_alias(f"{mxalias}:{matrix_bot.domain}")).room_id
+
+
 class Client(fbchat.Client):
     def __init__(self, *args, matrix_bot, matrix_protocol_roomid, log, **kwargs):
         super().__init__(*args, **kwargs)
