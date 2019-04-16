@@ -2,8 +2,21 @@
 import logging
 import asyncio
 
+import mautrix.errors
 import fbchat
 fbchat.log.setLevel(logging.WARNING)
+
+
+def mx_coro(mx, coro):
+    """
+    Because the Facebook listener runs in an executor, it's not easy to directly inject into mautrix's event loop.
+    I've created this function just so it can be done a little less verbosely
+    """
+    future = asyncio.run_coroutine_threadsafe(
+        coro=coro,
+        loop=mx.loop,
+    )
+    return future.result()  # FIXME: Should I include a timeout?
 
 
 class Person():
@@ -13,35 +26,72 @@ class Person():
 
 
 class Room():
+    fbid = None
+
     def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None, mxalias: str = None):
         if fbid is None and mxid is None and mxalias is None:
             raise Exception("Must have at least one of fbid, mxid, or mxalias")
 
-        if mxalias:
-            _mxid = asyncio.run(matrix_bot.get_room_alias(f"{mxalias}:{matrix_bot.domain}")).room_id
-            if mxid and _mxid != mxid:
-                    raise Exception("mxalias does not match mxid")
-            else:
-                mxid = _mxid
-        elif mxid and not mxalias:
-            mxalias = asyncio.run(matrix_bot.get_state_event(protocol_roomid, "m.room.canonical_alias"))['alias']
+        self.mx = matrix_bot
+        self.fb = fb_client
 
-        if fbid and not mxid and not mxalias:
-            mxalias = f"#fbchat_{fb_client.uid}_{fbid}"
-            mxid = 
+        if fbid:
+            self._get_fb_info(fbid)
+            if not mxalias:
+                mxalias = f"#fbchat_{fb_client.uid}_{fbid}"
 
+        self._get_mx_info(mxid=mxid, mxalias=mxalias)
 
         if not fbid:
-            mxalias
+            self._get_fb_info(self.mxalias.rsplit('_', 1)[1])
 
-    def _get_mxid(self):
-        return asyncio.run(matrix_bot.get_room_alias(f"{mxalias}:{matrix_bot.domain}")).room_id
+    def _get_fb_info(self, fbid: str):
+        t = self.fb.fetchThreadInfo(fbid)
+        assert len(t) == 1
+        thread_info = t[fbid]
+        if isinstance(thread_info, fbchat.User):
+            if thread_info.nickname:
+                self.name = thread_info.nickname
+            else:
+                self.name = thread_info.name
+        raise NotImplementedError(f"Can't get fb info for {fbid}")
+
+    def _get_mx_info(self, mxid: str = None, mxalias: str = None):
+        """
+        Given at least one of mxid or mxalias, set both of them with the correct info
+        """
+        if not mxid and not mxalias:
+            raise Exception("Must have at least one of mxid, or mxalias")
+        elif mxalias:
+            if not mxalias.startswith('#'):
+                raise Exception("Matrix room aliases must starts with a '#'")
+            if ':' not in mxalias:
+                mxalias = f"{mxalias}:{self.mx.domain}"
+
+            try:
+                _mxid = mx_coro(self.mx, self.mx.get_room_alias(mxalias)).room_id
+            except mautrix.errors.request.MNotFound:
+                if not self.fbid:
+                    raise Exception("Can't create Matrix room with no Facebook room to source data from")
+                else:
+                    raise NotImplementedError("Can't create new Matrix rooms yet")
+
+        if _mxid and mxid:
+            if mxid and _mxid != mxid:
+                raise Exception("mxalias does not match mxid")
+            mxid = _mxid
+        elif mxid and not mxalias:
+            mxalias = mx_coro(self.mx, self.mx.get_state_event(mxid, "m.room.canonical_alias"))['alias']
+
+        self.mxid = mxid
+        self.mxalias = mxalias
+        return (self.mxid, self.mxalias)  # Currently unused, but felt wrong not to return something
 
 
 class Client(fbchat.Client):
     def __init__(self, *args, matrix_bot, matrix_protocol_roomid, log, **kwargs):
         super().__init__(*args, **kwargs)
-        self.mx_bot = matrix_bot
+        self.mx = matrix_bot
         self.mx_protocol_roomid = matrix_protocol_roomid
         self.log = log
 
@@ -133,6 +183,8 @@ class Client(fbchat.Client):
         :type thread_type: models.fbchat.models.ThreadType
         """
         self.log.info("{} from {} in {}".format(message_object, thread_id, thread_type.name))
+        thread = Room(fb_client=self, matrix_bot=self.mx, fbid=thread_id)
+        print(vars(thread))
 
     def onColorChange(
         self,
@@ -401,8 +453,8 @@ class Client(fbchat.Client):
         :type thread_type: models.fbchat.models.ThreadType
         """
         self.log.info((f"Messages {msg_ids} delivered to {delivered_for} in"
-                         f"{thread_id} ({thread_type.name}) at {ts/1000}s"
-                         f"META {metadata} MSG {msg}"))
+                       f"{thread_id} ({thread_type.name}) at {ts/1000}s"
+                       f"META {metadata} MSG {msg}"))
 
 #    def onMarkedSeen(
 #        self, threads=None, seen_ts=None, ts=None, metadata=None, msg=None
