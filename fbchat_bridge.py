@@ -27,6 +27,7 @@ class Person():
 
 class Room():
     fbid = None
+    topic = ''
 
     def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None, mxalias: str = None):
         if fbid is None and mxid is None and mxalias is None:
@@ -34,27 +35,40 @@ class Room():
 
         self.mx = matrix_bot
         self.fb = fb_client
+        self.fbid = fbid
 
-        if fbid:
-            self._get_fb_info(fbid)
+        if self.fbid:
+            self._get_fb_info(self.fbid)
             if not mxalias:
-                mxalias = f"#fbchat_{fb_client.uid}_{fbid}"
+                mxalias = f"#fbchat_{fb_client.uid}_{self.fbid}:{self.mx.domain}"
 
         self._get_mx_info(mxid=mxid, mxalias=mxalias)
 
-        if not fbid:
-            self._get_fb_info(self.mxalias.rsplit('_', 1)[1])
+        if not self.fbid:
+            self.fbid = self.mxalias.rsplit('_', 1)[1]
+            self._get_fb_info(self.fbid)
 
     def _get_fb_info(self, fbid: str):
         t = self.fb.fetchThreadInfo(fbid)
         assert len(t) == 1
         thread_info = t[fbid]
+        print('Thread info:', thread_info)
+        if thread_info.name:
+            self.name = thread_info.name
         if isinstance(thread_info, fbchat.User):
+            self.is_direct = True
+            self.fb_participants = [thread_info.uid]
             if thread_info.nickname:
                 self.name = thread_info.nickname
-            else:
-                self.name = thread_info.name
-        raise NotImplementedError(f"Can't get fb info for {fbid}")
+            if not self.topic:
+                self.topic = f"Facebook {'friend' if thread_info.is_friend else 'correspondent'}"
+        elif isinstance(thread_info, fbchat.Group):
+            self.is_direct = False
+            self.fb_participants = list(thread_info.participants)
+            if not self.topic:
+                self.topic = f"Facebook group chat"
+        else:
+            raise NotImplementedError(f"Unknown Facebook thread type")
 
     def _get_mx_info(self, mxid: str = None, mxalias: str = None):
         """
@@ -63,10 +77,12 @@ class Room():
         if not mxid and not mxalias:
             raise Exception("Must have at least one of mxid, or mxalias")
         elif mxalias:
-            if not mxalias.startswith('#'):
-                raise Exception("Matrix room aliases must starts with a '#'")
-            if ':' not in mxalias:
-                mxalias = f"{mxalias}:{self.mx.domain}"
+            print('FINDME!', mxalias)
+            if not mxalias.startswith('#') and ':' not in mxalias:
+                alias_localpart = mxalias
+                mxalias = f"#{alias_localpart}:{self.mx.domain}"
+            else:
+                alias_localpart = mxalias.split(':', 1)[0].lstrip('#')
 
             try:
                 _mxid = mx_coro(self.mx, self.mx.get_room_alias(mxalias)).room_id
@@ -74,7 +90,19 @@ class Room():
                 if not self.fbid:
                     raise Exception("Can't create Matrix room with no Facebook room to source data from")
                 else:
-                    raise NotImplementedError("Can't create new Matrix rooms yet")
+                    self.fb.log.info("FINDME! Creating Matrix room {mxalias}, with participants {self.fb_participants}")
+                    _mxid = mx_coro(self.mx, self.mx.create_room(
+                        alias_localpart=alias_localpart,
+                        visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
+                        name=self.name,
+                        topic=self.topic,
+                        is_direct=self.is_direct,
+                        invitees=[mx_coro(self.mx, self.mx.puppet.whoami())] +
+                                 [f"@fbchat_{uid}:{self.mx.domain}" for uid in self.fb_participants],
+                        # initial_state=,
+                        # room_version=,
+                        # creation_content=,
+                    ))
 
         if _mxid and mxid:
             if mxid and _mxid != mxid:
@@ -184,7 +212,9 @@ class Client(fbchat.Client):
         """
         self.log.info("{} from {} in {}".format(message_object, thread_id, thread_type.name))
         thread = Room(fb_client=self, matrix_bot=self.mx, fbid=thread_id)
-        print(vars(thread))
+        print()
+        print('new thread info', vars(thread))
+        print()
 
     def onColorChange(
         self,

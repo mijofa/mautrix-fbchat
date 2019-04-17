@@ -96,13 +96,14 @@ async def main(
         # So, instead, I have added the matrix user to the appservice's regexes,
         # and am treating it as another child of the appservice
         matrix_puppet = matrix_bot.user(f"@{matrix_user_localpart}:{matrix_domain}")
+        matrix_bot.puppet = matrix_puppet  # Hand the puppet onto the fbchat client without even *more* variables
 
         # Make sure the protocol room exists and the bot is a member, for debugging/etc
         try:
             # A lot of functions (such as send_text) don't support room aliases, so save the room ID
             protocol_roomid = (await matrix_bot.get_room_alias(f"#{protocol_room_alias}:{matrix_appservice.domain}")).room_id
         except mautrix.errors.request.MNotFound:
-            await matrix_bot.create_room(
+            protocol_roomid = await matrix_bot.create_room(
                 alias_localpart=protocol_room_alias,
                 visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
                 name="Facebook",
@@ -117,6 +118,7 @@ async def main(
             # This is probably unnecessary because the mautrix library does this as needed, but it doesn't hurt.
             # I also think it makes more sense intuitively to do this right here.
             awaitables.append(matrix_bot.ensure_joined(protocol_roomid))
+            awaitables.append(matrix_puppet.ensure_joined(protocol_roomid))
             awaitables.append(log_handler.log_to_matrix(matrix_intent=matrix_bot, matrix_roomid=protocol_roomid))
 
         facebook_puppet = fbchat_bridge.Client(
