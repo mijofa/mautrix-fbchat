@@ -13,6 +13,7 @@ import yaml
 
 import mautrix
 import mautrix.client.api.types
+from mautrix.appservice.state_store.pickle import PickleStateStore
 
 import fbchat_bridge
 import commands
@@ -83,6 +84,7 @@ async def main(
         query_user=default_query_handler,
         query_alias=default_query_handler,
         # log=logger,
+        state_store=PickleStateStore(autosave_file='mx-state.p')
     )
 
     url_parsed = urllib.parse.urlsplit(url)
