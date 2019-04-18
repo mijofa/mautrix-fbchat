@@ -24,29 +24,103 @@ class Person():
         if fbid is None and mxid is None:
             raise Exception("Must have either an fbid or mxid")
 
+        self.parent_mx = matrix_bot
+        self.parent_fb = fb_client
+
+        if not mxid:
+            self.mxalias = f"@fbchat_{self.parent_fb.uid}_{fbid}:{self.parent_mx.domain}"
+        elif not fbid:
+            raise NotImplementedError("Can't get mxalias from mxid yet")
+            fbid = self.mxalias.rsplit(':', 1)[0].rsplit('_', 1)[1]
+
+        self.fbid = fbid
+        self.mx = matrix_bot.user(self.mxalias)
+        print(f"Registering intent for {self.mxalias}", mx_coro(self.mx, self.mx.ensure_registered()))
+
+        ## FIXME: Get Facebook name, photo, nicknames, etc.
+
+    def get_or_create_room(
+        self,
+        fb_thread_id: str = None,
+        mxid: str = None,
+    ):
+        ## FIXME: SHould also update the room info such that a new group name in Facebook changes the Matrix room name
+        room = Room(matrix_bot=self.parent_mx, fb_client=self.parent_fb, fbid=fb_thread_id)
+
+        if mxid and mxid != room.mxid:
+            raise Exception("mxid does not match expected mxid")
+        if not room.mxid:
+            if not fb_thread_id:
+                raise Exception("Can't create Matrix room with no Facebook room to source data from")
+            else:
+                local_mxalias = room.mxalias.rsplit(':', 1)[0].lstrip('#')
+                invitees = ([mx_coro(self.parent_mx, self.parent_mx.puppet.whoami())] +
+                            [f"@fbchat_{self.parent_fb.uid}_{uid}:{self.mx.domain}" for uid in room.fb_participants])
+                self.parent_fb.log.info(f"FINDME! Creating Matrix room {local_mxalias}, with participants {invitees}")
+                room.mxid = mx_coro(self.mx, self.mx.create_room(
+                    alias_localpart=local_mxalias,
+                    visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
+                    name=room.name,
+                    topic=room.topic,
+                    is_direct=room.is_direct,
+                    invitees=invitees
+                    # initial_state=,
+                    # room_version=,
+                    # creation_content=,
+                ))
+                self.parent_mx.puppet.ensure_joined(room.mxid)
+                # FIXME: Join appservice bots as they're invited?
+                self.parent_fb.log.info(f"FINDME! Created")
+
+        # FIXME: What if the room already exists but this user is not in the room?
+
+        return room
+
+    def doTextMessage(
+        self,
+        message_text: str,
+        mid=None,
+        author_id=None,
+        timestamp: str = None,
+        fb_thread_id: str = None,
+        mx_room_id: str = None,
+        mx_room_alias: str = None,
+    ):
+        if fb_thread_id and not mx_room_id:
+            room = self.get_or_create_room(fb_thread_id=fb_thread_id)
+            mx_coro(self.mx, self.mx.send_text(room.mxid, message_text))
+        elif mx_room_id and not fb_thread_id:
+            raise NotImplementedError("Don't know how to message Facebook from Matrix yet")
+        else:
+            raise Exception("This should not be possible")
+
 
 class Room():
     fbid = None
     topic = ''
 
-    def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None, mxalias: str = None):
-        if fbid is None and mxid is None and mxalias is None:
-            raise Exception("Must have at least one of fbid, mxid, or mxalias")
-
+    def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None):
         self.mx = matrix_bot
         self.fb = fb_client
         self.fbid = fbid
+        self.mxid = mxid
 
-        if self.fbid:
-            self._get_fb_info(self.fbid)
-            if not mxalias:
-                mxalias = f"#fbchat_{fb_client.uid}_{self.fbid}:{self.mx.domain}"
+        if not self.mxid and not self.fbid:
+            raise Exception("Must initialise Room with at least one of fbid or mxid")
 
-        self._get_mx_info(mxid=mxid, mxalias=mxalias)
+        if mxid:
+            self.mxalias = mx_coro(self.mx, self.mx.get_state_event(mxid, "m.room.canonical_alias"))['alias']
+        else:
+            self.mxalias = f"#fbchat_{fb_client.uid}_{self.fbid}:{self.mx.domain}"
+            try:
+                self.mxid = mx_coro(self.mx, self.mx.get_room_alias(self.mxalias)).room_id
+            except mautrix.errors.request.MNotFound:
+                self.mxid = None
 
         if not self.fbid:
-            self.fbid = self.mxalias.rsplit('_', 1)[1]
-            self._get_fb_info(self.fbid)
+            self.fbid = self.mxalias.rsplit(':', 1)[0].rsplit('_', 1)[1]
+
+        self._get_fb_info(self.fbid)
 
     def _get_fb_info(self, fbid: str):
         t = self.fb.fetchThreadInfo(fbid)
@@ -69,51 +143,6 @@ class Room():
                 self.topic = f"Facebook group chat"
         else:
             raise NotImplementedError(f"Unknown Facebook thread type")
-
-    def _get_mx_info(self, mxid: str = None, mxalias: str = None):
-        """
-        Given at least one of mxid or mxalias, set both of them with the correct info
-        """
-        if not mxid and not mxalias:
-            raise Exception("Must have at least one of mxid, or mxalias")
-        elif mxalias:
-            print('FINDME!', mxalias)
-            if not mxalias.startswith('#') and ':' not in mxalias:
-                alias_localpart = mxalias
-                mxalias = f"#{alias_localpart}:{self.mx.domain}"
-            else:
-                alias_localpart = mxalias.split(':', 1)[0].lstrip('#')
-
-            try:
-                _mxid = mx_coro(self.mx, self.mx.get_room_alias(mxalias)).room_id
-            except mautrix.errors.request.MNotFound:
-                if not self.fbid:
-                    raise Exception("Can't create Matrix room with no Facebook room to source data from")
-                else:
-                    self.fb.log.info("FINDME! Creating Matrix room {mxalias}, with participants {self.fb_participants}")
-                    _mxid = mx_coro(self.mx, self.mx.create_room(
-                        alias_localpart=alias_localpart,
-                        visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
-                        name=self.name,
-                        topic=self.topic,
-                        is_direct=self.is_direct,
-                        invitees=[mx_coro(self.mx, self.mx.puppet.whoami())] +
-                                 [f"@fbchat_{uid}:{self.mx.domain}" for uid in self.fb_participants],
-                        # initial_state=,
-                        # room_version=,
-                        # creation_content=,
-                    ))
-
-        if _mxid and mxid:
-            if mxid and _mxid != mxid:
-                raise Exception("mxalias does not match mxid")
-            mxid = _mxid
-        elif mxid and not mxalias:
-            mxalias = mx_coro(self.mx, self.mx.get_state_event(mxid, "m.room.canonical_alias"))['alias']
-
-        self.mxid = mxid
-        self.mxalias = mxalias
-        return (self.mxid, self.mxalias)  # Currently unused, but felt wrong not to return something
 
 
 class Client(fbchat.Client):
@@ -210,11 +239,10 @@ class Client(fbchat.Client):
         :type message_object: models.Message
         :type thread_type: models.fbchat.models.ThreadType
         """
-        self.log.info("{} from {} in {}".format(message_object, thread_id, thread_type.name))
-        thread = Room(fb_client=self, matrix_bot=self.mx, fbid=thread_id)
-        print()
-        print('new thread info', vars(thread))
-        print()
+        sender = Person(matrix_bot=self.mx, fb_client=self, fbid=message_object.author)
+        self.log.info(f"Extra message metadata from Faceboook: {metadata}")
+        self.log.info(f"All message info from Faceboook: {msg}")
+        sender.doTextMessage(fb_thread_id=thread_id, message_text=message_object.text, timestamp=ts)
 
     def onColorChange(
         self,
@@ -1103,6 +1131,7 @@ class Client(fbchat.Client):
         :param buddylist: A list of dicts with friend id and last seen timestamp
         :param msg: A full set of the data recieved
         """
+        return  # OMG shut up!
         self.log.debug("Chat Timestamps received: {}".format(buddylist))
 
     # How is this different from the one above?
