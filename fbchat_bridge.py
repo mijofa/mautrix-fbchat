@@ -34,7 +34,10 @@ class Person():
             fbid = self.mxalias.rsplit(':', 1)[0].rsplit('_', 1)[1]
 
         self.fbid = fbid
-        self.mx = matrix_bot.user(self.mxalias)
+        if fbid == fb_client.uid:
+            self.mx = matrix_bot.puppet
+        else:
+            self.mx = matrix_bot.user(self.mxalias)
         print(f"Registering intent for {self.mxalias}", mx_coro(self.mx, self.mx.ensure_registered()))
 
         ## FIXME: Get Facebook name, photo, nicknames, etc.
@@ -86,6 +89,9 @@ class Person():
         mx_room_id: str = None,
         mx_room_alias: str = None,
     ):
+        # FIXME: Don't send messages to Facebook that were sent to Matrix as this bridge, and vice versa
+        # Why does Matrix not have a client ID or similar? Facebook has that.
+        # Looks like I'll have to use some (preferrably non-printable) text at the beginning or end of messages sent into Matrix as a deduplication tag
         if fb_thread_id and not mx_room_id:
             room = self.get_or_create_room(fb_thread_id=fb_thread_id)
             mx_coro(self.mx, self.mx.send_text(room.mxid, message_text))
