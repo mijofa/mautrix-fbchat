@@ -3,11 +3,12 @@ import argparse
 import asyncio
 import datetime
 import logging
+import queue
+import re
 import sys
+import threading
 import time
 import urllib
-import queue
-import threading
 
 import yaml
 
@@ -48,6 +49,49 @@ class asyncLogger(logging.Handler):
             self.handleError(record)
 
 
+class invite_acceptor(object):
+    """
+    Just blindly accept all invites sent to/from appservice users for appservice rooms.
+    This is because it just got real annoying trying to accept invites as soon as they were sent.
+    """
+    def __init__(self, mx, log, user_regexes, room_regexes):
+        self.mx = mx
+        self.log = log
+        self.user_regexes = [re.compile(r) for r in user_regexes]
+        self.room_regexes = [re.compile(r) for r in room_regexes]
+
+    async def handle_event(self, mx_ev):
+        if (
+            not isinstance(mx_ev.content, mautrix.types.MemberStateEventContent) or
+            not mx_ev.content.membership == mautrix.types.Membership.INVITE
+        ):
+            return  # This is not an invite event
+
+        self.log.info(f'{mx_ev.state_key} was invited to join {mx_ev.room_id} by {mx_ev.sender}')
+
+        if not any(r.match(mx_ev.state_key) for r in self.user_regexes):
+            # If I understand the protocol correctly,
+            # events that make it through this if branch shouldn't even appear to the appservice in the first place
+            self.log.info(f'Invite recipient "{mx_ev.state_key}" does not match regexes "{self.user_regexes}"')
+            return  # Not sent to an appservice user
+
+        if not mx_ev.sender == (await self.mx.whoami()) and not any(r.match(mx_ev.sender) for r in self.user_regexes):
+            self.log.info(f'Sender "{mx_ev.sender}" does not match regexes')
+            return  # Not sent by an appservice user
+
+        # The appservice user can't get the canonical alias unless their in the room,
+        # so use the sender's user to get the alias instead.
+        room_alias = (await self.mx.user(mx_ev.sender).get_state_event(
+            mx_ev.room_id, mautrix.client.api.types.EventType.ROOM_CANONICAL_ALIAS))['canonical_alias']
+        if not any(r.match(room_alias) for r in self.room_regexes):
+            self.log.info(f'Room alias "{room_alias}" does not match regexes')
+            return  # Not being invited into an appservice room
+
+        self.log.info(f'Joining {mx_ev.state_key} into {room_alias} ({mx_ev.room_id})')
+        # If it's reached this far then it's a valid invite that should be autoaccepted
+        return await self.mx.user(mx_ev.state_key).ensure_joined(mx_ev.room_id)
+
+
 async def main(
         matrix_baseurl,
         as_token,
@@ -59,6 +103,7 @@ async def main(
         fbchat_uid,
         fbchat_session,
         url,
+        namespaces,
         verbose,
         **kwargs):
 
@@ -100,6 +145,16 @@ async def main(
         matrix_puppet = matrix_bot.user(f"@{matrix_user_localpart}:{matrix_domain}")
         matrix_bot.puppet = matrix_puppet  # Hand the puppet onto the fbchat client without even *more* variables
 
+        # Before creating any rooms, or doing anything really,
+        # set up an event handler to autoaccept invites to & from appservice users.
+        autoaccepter = invite_acceptor(
+            mx=matrix_bot,
+            log=logger,
+            user_regexes=(ns['regex'] for ns in namespaces['users']),
+            room_regexes=(ns['regex'] for ns in namespaces['aliases']),
+        )
+        matrix_appservice.matrix_event_handler(autoaccepter.handle_event)
+
         # Make sure the protocol room exists and the bot is a member, for debugging/etc
         try:
             # A lot of functions (such as send_text) don't support room aliases, so save the room ID
@@ -117,12 +172,13 @@ async def main(
                 # creation_content=,
             )
         finally:
-            # This is probably unnecessary because the mautrix library does this as needed, but it doesn't hurt.
-            # I also think it makes more sense intuitively to do this right here.
-            awaitables.append(matrix_bot.ensure_joined(protocol_roomid))
-            awaitables.append(matrix_puppet.ensure_joined(protocol_roomid))
+            ## Don't need to join the rooms manually because they'll be joined by the autoaccepter above
+            # awaitables.append(matrix_bot.ensure_joined(protocol_roomid))
+            # awaitables.append(matrix_puppet.ensure_joined(protocol_roomid))
             awaitables.append(log_handler.log_to_matrix(matrix_intent=matrix_bot, matrix_roomid=protocol_roomid))
 
+        # Log into Facebook
+        # The only reason this isn't done earlier is because I want any errors logged into the protocol room
         facebook_puppet = fbchat_bridge.Client(
             email=fbchat_username,
             password='?',
@@ -135,6 +191,8 @@ async def main(
         assert facebook_puppet.isLoggedIn()
         matrix_appservice.matrix_event_handler(facebook_puppet.handle_matrix_event)
 
+        # Set up an event handler for custom commands
+        # FIXME: Should this be done earlier to handle Facebook 2FA/etc?
         cmd_hdlr = commands.command_handler(
             protocol_roomid=protocol_roomid,
             matrix_bot=matrix_bot
@@ -142,9 +200,11 @@ async def main(
         awaitables.append(cmd_hdlr.set_username(matrix_puppet.whoami()))
         matrix_appservice.matrix_event_handler(cmd_hdlr.handle_event)
 
+        # Finally actually start the things
         awaitables.append((await server).start_serving())
         awaitables.append(facebook_puppet.listen())
 
+        # Let the user know we've started the things, then wait for all the things (forever)
         await matrix_bot.send_text(protocol_roomid, "Ready!")
         await asyncio.gather(*awaitables)
 
