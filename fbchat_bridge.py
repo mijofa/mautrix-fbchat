@@ -3,8 +3,13 @@ import logging
 import asyncio
 
 import mautrix.errors
+import mautrix.client.api.types
 import fbchat
 fbchat.log.setLevel(logging.WARNING)
+
+
+_fb_rooms_cache = {}
+_mx_rooms_cache = {}
 
 
 def mx_coro(mx, coro):
@@ -17,6 +22,65 @@ def mx_coro(mx, coro):
         loop=mx.loop,
     )
     return future.result()  # FIXME: Should I include a timeout?
+
+
+def get_room(
+    matrix_bot,  # Matrix client to create the room if it doesn't exist
+    fb_client,  # Facebook client to query Facebook for thread info
+    fbid: str = None,
+    mxid: str = None,
+):
+    # GOTCHAS:
+    # * is_direct doesn't set the m.direct values for the room's creator, only the invitees
+    # * mautrix doesn't seem to have any way to get or set the m.direct values directly
+    #
+    # Workaround is to create the room as the main appservice bot,
+    # invite all the attendees including the real user,
+    # then remove the bot from the room immediately.
+
+    # FIXME: Should also update the room info such that a new group name in Facebook changes the Matrix room name
+    # FIXME: What if the room already exists but the relevant user is not in the room?
+    #        Such as when there's new participants in a group chat.
+
+    # Check the running in-memory cache of rooms to avoid reinstating duplicate objects all over the place
+    if fbid and fbid in _fb_rooms_cache:
+        room = _fb_rooms_cache[fbid]
+    elif mxid and mxid in _mx_rooms_cache:
+        room = _mx_rooms_cache[mxid]
+    else:
+        room = Room(matrix_bot=matrix_bot, fb_client=fb_client, fbid=fbid, mxid=mxid)
+
+    if mxid and mxid != room.mxid:
+        raise Exception("mxid does not match expected mxid")
+    if not room.mxid:
+        if not fbid:
+            raise Exception("Can't create Matrix room with no Facebook room to source data from")
+        else:
+            local_mxalias = room.mxalias.rsplit(':', 1)[0].lstrip('#')
+            invitees = ([mx_coro(matrix_bot, matrix_bot.puppet.whoami())] +
+                        [f"@fbchat_{fb_client.uid}_{uid}:{matrix_bot.domain}" for uid in room.fb_participants])
+            # invitees.remove(mx_coro(self.mx, self.mx.whoami()))  # Inviting people already in the room causes an error
+            fb_client.log.info(f"Creating Matrix room {local_mxalias}, with participants {invitees}")
+            room.mxid = mx_coro(matrix_bot, matrix_bot.create_room(
+                alias_localpart=local_mxalias,
+                visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
+                name=room.name,
+                topic=room.topic,
+                is_direct=room.is_direct,
+                invitees=invitees
+                # initial_state=,
+                # room_version=,
+                # creation_content=,
+            ))
+            # Remove the appservice bot from the room
+            mx_coro(matrix_bot, matrix_bot.leave_room(room.mxid))
+            # All appservice users should get joined automatically by the autoaccepter in main.py
+
+    # Update the room in-memory cache of rooms
+    _fb_rooms_cache[fbid] = room
+    _mx_rooms_cache[mxid] = room
+
+    return room
 
 
 class Person():
@@ -38,46 +102,9 @@ class Person():
             self.mx = matrix_bot.puppet
         else:
             self.mx = matrix_bot.user(self.mxalias)
-        print(f"Registering intent for {self.mxalias}", mx_coro(self.mx, self.mx.ensure_registered()))
+        mx_coro(self.mx, self.mx.ensure_registered())
 
         ## FIXME: Get Facebook name, photo, nicknames, etc.
-
-    def get_or_create_room(
-        self,
-        fb_thread_id: str = None,
-        mxid: str = None,
-    ):
-        ## FIXME: SHould also update the room info such that a new group name in Facebook changes the Matrix room name
-        room = Room(matrix_bot=self.parent_mx, fb_client=self.parent_fb, fbid=fb_thread_id)
-
-        if mxid and mxid != room.mxid:
-            raise Exception("mxid does not match expected mxid")
-        if not room.mxid:
-            if not fb_thread_id:
-                raise Exception("Can't create Matrix room with no Facebook room to source data from")
-            else:
-                local_mxalias = room.mxalias.rsplit(':', 1)[0].lstrip('#')
-                invitees = ([mx_coro(self.parent_mx, self.parent_mx.puppet.whoami())] +
-                            [f"@fbchat_{self.parent_fb.uid}_{uid}:{self.mx.domain}" for uid in room.fb_participants])
-                self.parent_fb.log.info(f"FINDME! Creating Matrix room {local_mxalias}, with participants {invitees}")
-                room.mxid = mx_coro(self.mx, self.mx.create_room(
-                    alias_localpart=local_mxalias,
-                    visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
-                    name=room.name,
-                    topic=room.topic,
-                    is_direct=room.is_direct,
-                    invitees=invitees
-                    # initial_state=,
-                    # room_version=,
-                    # creation_content=,
-                ))
-                self.parent_mx.puppet.ensure_joined(room.mxid)
-                # FIXME: Join appservice bots as they're invited?
-                self.parent_fb.log.info(f"FINDME! Created")
-
-        # FIXME: What if the room already exists but this user is not in the room?
-
-        return room
 
     def doTextMessage(
         self,
@@ -91,9 +118,11 @@ class Person():
     ):
         # FIXME: Don't send messages to Facebook that were sent to Matrix as this bridge, and vice versa
         # Why does Matrix not have a client ID or similar? Facebook has that.
-        # Looks like I'll have to use some (preferrably non-printable) text at the beginning or end of messages sent into Matrix as a deduplication tag
+        # Looks like I'll have to use some non-printable text in messages sent into Matrix as a deduplication tag
         if fb_thread_id and not mx_room_id:
-            room = self.get_or_create_room(fb_thread_id=fb_thread_id)
+            room = get_room(matrix_bot=self.parent_mx, fb_client=self.parent_fb, fbid=fb_thread_id)
+            # Need to make sure the room has been joined just in case the invite autoaccepter hasn't had enough time.
+            mx_coro(self.mx, self.mx.ensure_joined(room.mxid))
             mx_coro(self.mx, self.mx.send_text(room.mxid, message_text))
         elif mx_room_id and not fb_thread_id:
             raise NotImplementedError("Don't know how to message Facebook from Matrix yet")
@@ -115,7 +144,9 @@ class Room():
             raise Exception("Must initialise Room with at least one of fbid or mxid")
 
         if mxid:
-            self.mxalias = mx_coro(self.mx, self.mx.get_state_event(mxid, "m.room.canonical_alias"))['alias']
+            self.mxalias = mx_coro(
+                self.mx, self.mx.get_state_event(mxid, mautrix.client.api.types.EventType.ROOM_CANONICAL_ALIAS)
+            )['canonical_alias']
         else:
             self.mxalias = f"#fbchat_{fb_client.uid}_{self.fbid}:{self.mx.domain}"
             try:
@@ -132,7 +163,6 @@ class Room():
         t = self.fb.fetchThreadInfo(fbid)
         assert len(t) == 1
         thread_info = t[fbid]
-        print('Thread info:', thread_info)
         if thread_info.name:
             self.name = thread_info.name
         if isinstance(thread_info, fbchat.User):
