@@ -9,14 +9,10 @@ class _commands:
 
 
 class command_handler(object):
-    def __init__(self, matrix_bot, protocol_roomid, username=None):
+    def __init__(self, matrix_bot, matrix_user_localpart: str, protocol_roomid: str):
         self.mx_bot = matrix_bot
         self.roomid = protocol_roomid
-        self.username = username
-
-    async def set_username(self, whoami):
-        assert self.username is None
-        self.username = await whoami
+        self.username = f"@{matrix_user_localpart}:{matrix_bot.domain}"
 
     async def handle_event(self, mx_ev):
         if not isinstance(mx_ev, mautrix.types.MessageEvent):

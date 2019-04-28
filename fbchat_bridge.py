@@ -10,6 +10,8 @@ fbchat.log.setLevel(logging.WARNING)
 
 _fb_rooms_cache = {}
 _mx_rooms_cache = {}
+_fb_people_cache = {}
+_mx_people_cache = {}
 
 
 def mx_coro(mx, coro):
@@ -17,152 +19,171 @@ def mx_coro(mx, coro):
     Because the Facebook listener runs in an executor, it's not easy to directly inject into mautrix's event loop.
     I've created this function just so it can be done a little less verbosely
     """
-    future = asyncio.run_coroutine_threadsafe(
-        coro=coro,
-        loop=mx.loop,
-    )
-    return future.result()  # FIXME: Should I include a timeout?
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError as e:
+        # This is actually the path I *want* it to take
+        current_loop = None
+        if len(e.args) != 1 or e.args[0] != "no running event loop":
+            raise
 
-
-def get_room(
-    matrix_bot,  # Matrix client to create the room if it doesn't exist
-    fb_client,  # Facebook client to query Facebook for thread info
-    fbid: str = None,
-    mxid: str = None,
-):
-    # GOTCHAS:
-    # * is_direct doesn't set the m.direct values for the room's creator, only the invitees
-    # * mautrix doesn't seem to have any way to get or set the m.direct values directly
-    #
-    # Workaround is to create the room as the main appservice bot,
-    # invite all the attendees including the real user,
-    # then remove the bot from the room immediately.
-
-    # FIXME: Should also update the room info such that a new group name in Facebook changes the Matrix room name
-    # FIXME: What if the room already exists but the relevant user is not in the room?
-    #        Such as when there's new participants in a group chat.
-
-    # Check the running in-memory cache of rooms to avoid reinstating duplicate objects all over the place
-    if fbid and fbid in _fb_rooms_cache:
-        room = _fb_rooms_cache[fbid]
-    elif mxid and mxid in _mx_rooms_cache:
-        room = _mx_rooms_cache[mxid]
+    if current_loop == mx.loop:
+        mx.log.warning("Attempting to run Asyncio co-routine from inside the same event loop, can not return the result")
+        current_loop.call_soon_threadsafe(coro)
     else:
-        room = Room(matrix_bot=matrix_bot, fb_client=fb_client, fbid=fbid, mxid=mxid)
-
-    if mxid and mxid != room.mxid:
-        raise Exception("mxid does not match expected mxid")
-    if not room.mxid:
-        if not fbid:
-            raise Exception("Can't create Matrix room with no Facebook room to source data from")
-        else:
-            local_mxalias = room.mxalias.rsplit(':', 1)[0].lstrip('#')
-            invitees = ([mx_coro(matrix_bot, matrix_bot.puppet.whoami())] +
-                        [f"@fbchat_{fb_client.uid}_{uid}:{matrix_bot.domain}" for uid in room.fb_participants])
-            # invitees.remove(mx_coro(self.mx, self.mx.whoami()))  # Inviting people already in the room causes an error
-            fb_client.log.info(f"Creating Matrix room {local_mxalias}, with participants {invitees}")
-            room.mxid = mx_coro(matrix_bot, matrix_bot.create_room(
-                alias_localpart=local_mxalias,
-                visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
-                name=room.name,
-                topic=room.topic,
-                is_direct=room.is_direct,
-                invitees=invitees
-                # initial_state=,
-                # room_version=,
-                # creation_content=,
-            ))
-            # Remove the appservice bot from the room
-            mx_coro(matrix_bot, matrix_bot.leave_room(room.mxid))
-            # All appservice users should get joined automatically by the autoaccepter in main.py
-
-    # Update the room in-memory cache of rooms
-    _fb_rooms_cache[fbid] = room
-    _mx_rooms_cache[mxid] = room
-
-    return room
+        future = asyncio.run_coroutine_threadsafe(
+            coro=coro,
+            loop=mx.loop,
+        )
+        return future.result()  # FIXME: Should I include a timeout?
 
 
 class Person():
-    def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None):
-        if fbid is None and mxid is None:
-            raise Exception("Must have either an fbid or mxid")
+    # FIXME: Add a useful __str__ function
+    @classmethod
+    def _check_cache(cls, fbid: str = None, mxid: str = None):
+        # Check the running in-memory cache of people to avoid reinstating duplicate objects all over the place
+        if not fbid and not mxid:
+            raise Exception("Must have at least one of fbid or mxid")
 
-        self.parent_mx = matrix_bot
-        self.parent_fb = fb_client
-
-        if not mxid:
-            self.mxalias = f"@fbchat_{self.parent_fb.uid}_{fbid}:{self.parent_mx.domain}"
-        elif not fbid:
-            raise NotImplementedError("Can't get mxalias from mxid yet")
-            fbid = self.mxalias.rsplit(':', 1)[0].rsplit('_', 1)[1]
-
-        self.fbid = fbid
-        if fbid == fb_client.uid:
-            self.mx = matrix_bot.puppet
+        if fbid and fbid in _fb_people_cache:
+            return _fb_people_cache[fbid]
+        elif mxid and mxid in _mx_people_cache:
+            return _mx_people_cache[mxid]
         else:
-            self.mx = matrix_bot.user(self.mxalias)
-        mx_coro(self.mx, self.mx.ensure_registered())
+            return None
+
+    def _update_cache(self):
+        # Update the in-memory cache of people
+        if self.fbid:
+            _fb_people_cache[self.fbid] = self
+        if self.mxid:
+            _mx_people_cache[self.mxid] = self
+
+    @classmethod
+    async def async_get_from_mxid(cls, fb_client, mxid: str):
+        p = cls._check_cache(mxid=mxid) or cls(
+            fb_client=fb_client,
+            fbid=(fb_client.uid if mxid == fb_client.mx_puppet_id
+                  else mxid.rsplit(':', 1)[0].rsplit('_', 1)[1]),
+            mxid=mxid,
+        )
+        await fb_client.mx.ensure_registered()
+
+        return p
+
+    @classmethod
+    def get_from_fbid(cls, fb_client, fbid: str):
+        # Will never be called from Mautrix events, so doesn't need an awaitable version
+        p = cls._check_cache(mxid=fbid) or cls(
+            fb_client=fb_client,
+            fbid=fbid,
+            mxid=(fb_client.mx_puppet_id if fbid == fb_client.uid
+                  else f"@fbchat_{fb_client.uid}_{fbid}:{fb_client.mx.domain}"),
+        )
+        mx_coro(fb_client.mx, fb_client.mx.ensure_registered())
+
+        return p
+
+    def __init__(self, fb_client, fbid: str, mxid: str):
+        self.parent_fb = fb_client
+        self.fbid = fbid
+        self.mxid = mxid
+
+        self.mx = fb_client.mx.user(self.mxid)
+
+        self._update_cache()
 
         ## FIXME: Get Facebook name, photo, nicknames, etc.
 
-    def doTextMessage(
+    def facebook_message(
         self,
-        message_text: str,
-        mid=None,
-        author_id=None,
+        fb_thread_id: str,
+        message_object,
         timestamp: str = None,
-        fb_thread_id: str = None,
-        mx_room_id: str = None,
-        mx_room_alias: str = None,
     ):
+        # Looks like I'll have to use some non-printable text in messages sent into Matrix as a deduplication tag
+        room = Room.get_from_fbid(fb_client=self.parent_fb, fbid=fb_thread_id)
+        # Need to make sure the room has been joined just in case the invite autoaccepter hasn't had enough time.
+        mx_coro(self.mx, self.mx.ensure_joined(room.mxid))
+        mx_coro(self.mx, self.mx.send_text(room.mxid, message_object.text))
+
+    async def matrix_event(self, mx_ev):
         # FIXME: Don't send messages to Facebook that were sent to Matrix as this bridge, and vice versa
         # Why does Matrix not have a client ID or similar? Facebook has that.
-        # Looks like I'll have to use some non-printable text in messages sent into Matrix as a deduplication tag
-        if fb_thread_id and not mx_room_id:
-            room = get_room(matrix_bot=self.parent_mx, fb_client=self.parent_fb, fbid=fb_thread_id)
-            # Need to make sure the room has been joined just in case the invite autoaccepter hasn't had enough time.
-            mx_coro(self.mx, self.mx.ensure_joined(room.mxid))
-            mx_coro(self.mx, self.mx.send_text(room.mxid, message_text))
-        elif mx_room_id and not fb_thread_id:
-            raise NotImplementedError("Don't know how to message Facebook from Matrix yet")
-        else:
-            raise Exception("This should not be possible")
+        if isinstance(mx_ev, mautrix.types.MessageEvent):
+            room = await Room.async_get_from_mxid(fb_client=self.parent_fb, mxid=mx_ev.room_id)
+
+            self.parent_fb.log.critical(f'Should send message "{mx_ev.content.body}" in {room} from {self}')
 
 
 class Room():
-    fbid = None
-    topic = ''
+    # FIXME: Add a useful __str__ function
+    @classmethod
+    def _check_cache(cls, fbid: str = None, mxid: str = None):
+        # Check the running in-memory cache of rooms to avoid reinstating duplicate objects all over the place
+        if not fbid and not mxid:
+            raise Exception("Must have at least one of fbid or mxid")
 
-    def __init__(self, matrix_bot, fb_client, fbid: str = None, mxid: str = None):
-        self.mx = matrix_bot
+        if fbid and fbid in _fb_rooms_cache:
+            return _fb_rooms_cache[fbid]
+        elif mxid and mxid in _mx_rooms_cache:
+            return _mx_rooms_cache[mxid]
+        else:
+            return None
+
+    def _update_cache(self):
+        # Update the in-memory cache of rooms
+        if self.fbid:
+            _fb_rooms_cache[self.fbid] = self
+        if self.mxid:
+            _mx_rooms_cache[self.mxid] = self
+
+    @classmethod
+    async def async_get_from_mxid(cls, fb_client, mxid: str):
+        alias_response = await fb_client.mx.user(fb_client.mx_puppet_id).get_state_event(
+            mxid, mautrix.client.api.types.EventType.ROOM_CANONICAL_ALIAS)
+        r = cls._check_cache(mxid=mxid) or cls(
+            fb_client=fb_client,
+            fbid=alias_response['canonical_alias'].rsplit(':', 1)[0].rsplit('_', 1)[1],
+            mxalias=alias_response['canonical_alias'],
+            mxid=mxid,
+        )
+        return r
+
+    @classmethod
+    def get_from_fbid(cls, fb_client, fbid: str):
+        # Will never be called from Mautrix events, so doesn't need an awaitable version
+        r = cls._check_cache(mxid=fbid) or cls(
+            fb_client=fb_client,
+            fbid=fbid,
+            mxalias=f"#fbchat_{fb_client.uid}_{fbid}:{fb_client.mx.domain}",
+        )
+        if not r.mxid:
+            try:
+                r.mxid = mx_coro(fb_client.mx,
+                                 fb_client.mx.get_room_alias(r.mxalias)
+                                 )['room_id']
+            except mautrix.errors.request.MNotFound:
+                r.mxid = mx_coro(fb_client.mx, r._create_in_mx())
+
+        return r
+
+    def __init__(self, fb_client, fbid: str, mxalias: str, mxid: str = None):
         self.fb = fb_client
         self.fbid = fbid
+        self.mxalias = mxalias
         self.mxid = mxid
 
         if not self.mxid and not self.fbid:
             raise Exception("Must initialise Room with at least one of fbid or mxid")
 
-        if mxid:
-            self.mxalias = mx_coro(
-                self.mx, self.mx.get_state_event(mxid, mautrix.client.api.types.EventType.ROOM_CANONICAL_ALIAS)
-            )['canonical_alias']
-        else:
-            self.mxalias = f"#fbchat_{fb_client.uid}_{self.fbid}:{self.mx.domain}"
-            try:
-                self.mxid = mx_coro(self.mx, self.mx.get_room_alias(self.mxalias)).room_id
-            except mautrix.errors.request.MNotFound:
-                self.mxid = None
+        self._update_fb_info()
 
-        if not self.fbid:
-            self.fbid = self.mxalias.rsplit(':', 1)[0].rsplit('_', 1)[1]
-
-        self._get_fb_info(self.fbid)
-
-    def _get_fb_info(self, fbid: str):
-        t = self.fb.fetchThreadInfo(fbid)
+    def _update_fb_info(self):
+        t = self.fb.fetchThreadInfo(self.fbid)
         assert len(t) == 1
-        thread_info = t[fbid]
+        thread_info = t[self.fbid]
         if thread_info.name:
             self.name = thread_info.name
         if isinstance(thread_info, fbchat.User):
@@ -170,8 +191,7 @@ class Room():
             self.fb_participants = [thread_info.uid]
             if thread_info.nickname:
                 self.name = thread_info.nickname
-            if not self.topic:
-                self.topic = f"Facebook {'friend' if thread_info.is_friend else 'correspondent'}"
+            self.topic = f"Facebook {'friend' if thread_info.is_friend else 'correspondent'}"
         elif isinstance(thread_info, fbchat.Group):
             self.is_direct = False
             self.fb_participants = list(thread_info.participants)
@@ -180,16 +200,62 @@ class Room():
         else:
             raise NotImplementedError(f"Unknown Facebook thread type")
 
+        self._update_cache()
+
+    async def _create_in_mx(self):
+        # GOTCHAS:
+        # * is_direct doesn't set the m.direct values for the room's creator, only the invitees
+        # * mautrix doesn't seem to have any way to get or set the m.direct values directly
+        #
+        # Workaround is to create the room as the main appservice bot,
+        # invite all the attendees including the real user,
+        # then remove the bot from the room immediately.
+
+        # FIXME: Should also update the room info such that a new group name in Facebook changes the Matrix room name
+        # FIXME: What if the room already exists but the relevant user is not in the room?
+        #        Such as when there's new participants in a group chat.
+
+        local_mxalias = self.mxalias.rsplit(':', 1)[0].lstrip('#')
+        invitees = ([self.fb.mx_puppet_id] +
+                    [f"@fbchat_{self.fb.uid}_{uid}:{self.fb.mx.domain}" for uid in self.fb_participants])
+        # invitees.remove(await self.mx.whoami())  # Inviting people already in the room causes an error
+        self.fb.log.info(f"Creating Matrix room {local_mxalias}, with participants {invitees}")
+        mxid = await self.fb.mx.create_room(
+            alias_localpart=local_mxalias,
+            visibility=mautrix.client.api.types.RoomDirectoryVisibility.PRIVATE,
+            name=self.name,
+            topic=self.topic,
+            is_direct=self.is_direct,
+            invitees=invitees
+            # initial_state=,
+            # room_version=,
+            # creation_content=,
+        )
+        # Remove the appservice bot from the room
+        await self.fb.mx.leave_room(mxid)
+        # All appservice users should get joined automatically by the autoaccepter in main.py
+
+        self._update_cache()
+
+        return mxid
+
 
 class Client(fbchat.Client):
-    def __init__(self, *args, matrix_bot, matrix_protocol_roomid, log, **kwargs):
+    def __init__(self, *args, matrix_bot, matrix_user_localpart, log, **kwargs):
         super().__init__(*args, **kwargs)
         self.mx = matrix_bot
-        self.mx_protocol_roomid = matrix_protocol_roomid
+        self.mx_puppet_id = f"@{matrix_user_localpart}:{matrix_bot.domain}"
         self.log = log
 
     async def handle_matrix_event(self, mx_ev):
-        self.log.debug(mx_ev)
+        if isinstance(mx_ev, mautrix.types.MessageEvent):
+            if not mx_ev.sender == self.mx_puppet_id:
+                # Messages recieved in Matrix by anyone who is not the real user can be ignored
+                return
+
+            self.log.debug("Recieved Matrix MessageEvent from puppet id, processing")
+            sender = await Person.async_get_from_mxid(fb_client=self, mxid=mx_ev.sender)
+            await sender.matrix_event(mx_ev)
 
     async def listen(self, markAlive=None):
         """
@@ -275,10 +341,10 @@ class Client(fbchat.Client):
         :type message_object: models.Message
         :type thread_type: models.fbchat.models.ThreadType
         """
-        sender = Person(matrix_bot=self.mx, fb_client=self, fbid=message_object.author)
+        sender = Person.get_from_fbid(fb_client=self, fbid=message_object.author)
         self.log.info(f"Extra message metadata from Faceboook: {metadata}")
         self.log.info(f"All message info from Faceboook: {msg}")
-        sender.doTextMessage(fb_thread_id=thread_id, message_text=message_object.text, timestamp=ts)
+        sender.facebook_message(fb_thread_id=thread_id, message_object=message_object, timestamp=ts)
 
     def onColorChange(
         self,

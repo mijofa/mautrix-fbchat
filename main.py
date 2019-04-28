@@ -142,8 +142,6 @@ async def main(
         # I don't want to hand more passwords around.
         # So, instead, I have added the matrix user to the appservice's regexes,
         # and am treating it as another child of the appservice
-        matrix_puppet = matrix_bot.user(f"@{matrix_user_localpart}:{matrix_domain}")
-        matrix_bot.puppet = matrix_puppet  # Hand the puppet onto the fbchat client without even *more* variables
 
         # Before creating any rooms, or doing anything really,
         # set up an event handler to autoaccept invites to & from appservice users.
@@ -185,7 +183,7 @@ async def main(
             session_cookies=fbchat_session,
             max_tries=2,
             matrix_bot=matrix_bot,
-            matrix_protocol_roomid=protocol_roomid,
+            matrix_user_localpart=matrix_user_localpart,
             log=logger,
         )
         assert facebook_puppet.isLoggedIn()
@@ -195,9 +193,9 @@ async def main(
         # FIXME: Should this be done earlier to handle Facebook 2FA/etc?
         cmd_hdlr = commands.command_handler(
             protocol_roomid=protocol_roomid,
-            matrix_bot=matrix_bot
+            matrix_bot=matrix_bot,
+            matrix_user_localpart=matrix_user_localpart,
         )
-        awaitables.append(cmd_hdlr.set_username(matrix_puppet.whoami()))
         matrix_appservice.matrix_event_handler(cmd_hdlr.handle_event)
 
         # Finally actually start the things
@@ -205,7 +203,7 @@ async def main(
         awaitables.append(facebook_puppet.listen())
 
         # Let the user know we've started the things, then wait for all the things (forever)
-        await matrix_bot.send_text(protocol_roomid, "Ready!")
+        logger.info("Ready!")
         await asyncio.gather(*awaitables)
 
 if __name__ == '__main__':
